@@ -571,7 +571,7 @@ class SepVAE(nn.Module):
 
 
 
-    def elbo(self, fine_pos_mean, fine_pos_var, coarse_pos_mean, coarse_pos_var, output):
+    def elbo(self, fine_pos_mean, fine_pos_var, coarse_pos_mean, coarse_pos_var, output, x):
 
         def gaussian_log(x, mu, var):
             sig = torch.sqrt(var)
@@ -586,7 +586,7 @@ class SepVAE(nn.Module):
 
         kl_fine = kl_divergence(fine_pos_mean,fine_pos_var).mean(dim=0)
         kl_coarse = kl_divergence(coarse_pos_mean, coarse_pos_var).mean(dim=0)
-        loglike = gaussian_log(output,torch.zeros_like(output),torch.ones_like(output)).mean(dim=0)
+        loglike = gaussian_log(x,output,torch.ones_like(output)*self.params.output_var).mean(dim=0)
 
 
         return  kl_fine.sum() + kl_coarse.sum()  - loglike.sum()
