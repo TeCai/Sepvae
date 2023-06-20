@@ -345,7 +345,7 @@ class Params():
         self.discrete = discrete
         self.beta = beta
 
-        if self.discrete:
+        if self.discrete and self.useconv:
             self.expanding = (1,2,4)
             self.coarse_kernel_size = (9,5,5)
             self.conv_neckdim = 1
@@ -407,10 +407,10 @@ class SepVAEEncoder(nn.Module):
             self.input_features = self.params.map_neckdim * self.minimap_size**2
             self.input_features = int(self.input_features/2)
             self.to_finemean = nn.Sequential(nn.BatchNorm1d(self.input_features),nn.Linear(self.input_features, self.params.fine_neckdim),nn.LeakyReLU())
-            self.to_finelogvar = nn.Sequential(nn.BatchNorm1d(self.input_features),nn.Linear(self.input_features, self.params.fine_neckdim),nn.LeakyReLU())
+            self.to_finelogvar = nn.Sequential(nn.BatchNorm1d(self.input_features),nn.Linear(self.input_features, self.params.fine_neckdim),nn.LeakyReLU()) if not self.params.discrete else None
 
             self.to_coarsemean = nn.Sequential(nn.BatchNorm1d(self.input_features),nn.Linear(self.input_features, self.params.coarse_neckdim),nn.LeakyReLU())
-            self.to_coarselogvar = nn.Sequential(nn.BatchNorm1d(self.input_features),nn.Linear(self.input_features, self.params.coarse_neckdim),nn.LeakyReLU())
+            self.to_coarselogvar = nn.Sequential(nn.BatchNorm1d(self.input_features),nn.Linear(self.input_features, self.params.coarse_neckdim),nn.LeakyReLU()) if not self.params.discrete else None
 
         else:
             self.to_finemean = nn.Conv2d(self.params.map_neckdim, self.params.conv_neckdim,1)
@@ -449,10 +449,18 @@ class SepVAEEncoder(nn.Module):
             coarsemean_pt, coarsevar_pt = torch.chunk(xr, 2, 1)
 
             fine_pos_mean = self.to_finemean(torch.flatten(finemean_pt, 1))
-            fine_pos_var = self.to_finelogvar(torch.flatten(finevar_pt, 1)).exp()
+            fine_pos_var = self.to_finelogvar(torch.flatten(finevar_pt, 1)).exp() if not self.params.discrete else None
 
             coarse_pos_mean = self.to_coarsemean(torch.flatten(coarsemean_pt, 1))
-            coarse_pos_var = self.to_coarselogvar(torch.flatten(coarsevar_pt, 1)).exp()
+            coarse_pos_var = self.to_coarselogvar(torch.flatten(coarsevar_pt, 1)).exp() if not self.params.discrete else None
+
+            #
+            if self.params.discrete:
+                input_feature_sqrt = int(math.sqrt(self.params.fine_neckdim))
+                b,_ = fine_pos_mean.shape
+
+                fine_pos_mean = fine_pos_mean.view(b,input_feature_sqrt,input_feature_sqrt)
+                coarse_pos_mean = coarse_pos_mean.view(b,input_feature_sqrt, input_feature_sqrt)
 
         else:
             fine_pos_mean = self.to_finemean(x)
@@ -585,6 +593,9 @@ class SepVAE(nn.Module):
 
             fine_sample = fine_dis.sample()
             coarse_sample = coarse_dis.sample()
+            if not self.params.useconv:
+                fine_sample = torch.flatten(fine_sample, 1)
+                coarse_sample = torch.flatten(coarse_sample, 1)
 
         output = self.decoder(fine_sample, coarse_sample)
 
