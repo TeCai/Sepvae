@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 import math
 import numpy as np
-
+from .utils import OneHotDist
+import torch.distributions as torchd
 
 class Block(nn.Module):
     def __init__(self, dim, dim_out, kernel_size=3, groups=4):
@@ -304,7 +305,9 @@ class Params():
                  crossattn = True,
                  use_conv = True,
                  conv_neckdim = 16,
-                 output_var = 1e-4
+                 output_var = 1e-4,
+                 discrete = False,
+                 beta = 1e-3,
                  ):
 
 
@@ -315,7 +318,7 @@ class Params():
         :param output_channel:
         :param initial_dim:
         :param map_neckdim:
-        :param fine_neckdim:
+        :param fine_neckdim:,,
         :param coarse_neckdim:
         :param coarse_kernel_size:
         :param encode_attention:
@@ -339,10 +342,20 @@ class Params():
         self.useconv = use_conv
         self.conv_neckdim = conv_neckdim
         self.output_var = output_var
+        self.discrete = discrete
+        self.beta = beta
+
+        if self.discrete:
+            self.expanding = (1,2,4)
+            self.coarse_kernel_size = (9,5,5)
+            self.conv_neckdim = 1
 
         self.dims = [self.initial_dim, *map(lambda m: self.initial_dim * m, self.expanding)]
         self.minimap_size = int((self.input_size / 2 ** len(self.expanding)))
         self.input_features = self.map_neckdim * self.minimap_size ** 2 // 2
+
+
+
 
 
 class SepVAEEncoder(nn.Module):
@@ -401,9 +414,9 @@ class SepVAEEncoder(nn.Module):
 
         else:
             self.to_finemean = nn.Conv2d(self.params.map_neckdim, self.params.conv_neckdim,1)
-            self.to_finelogvar = nn.Conv2d(self.params.map_neckdim, self.params.conv_neckdim,1)
+            self.to_finelogvar = nn.Conv2d(self.params.map_neckdim, self.params.conv_neckdim,1) if not self.params.discrete else None
             self.to_coarsemean = nn.Conv2d(self.params.map_neckdim, self.params.conv_neckdim,1)
-            self.to_coarselogvar = nn.Conv2d(self.params.map_neckdim, self.params.conv_neckdim,1)
+            self.to_coarselogvar = nn.Conv2d(self.params.map_neckdim, self.params.conv_neckdim,1) if not self.params.discrete else None
 
     def forward(self,x):
         x = self.init_conv(x)
@@ -443,10 +456,10 @@ class SepVAEEncoder(nn.Module):
 
         else:
             fine_pos_mean = self.to_finemean(x)
-            fine_pos_var = self.to_finelogvar(x).exp()
+            fine_pos_var = self.to_finelogvar(x).exp() if not self.params.discrete else None
 
             coarse_pos_mean = self.to_coarsemean(xr)
-            coarse_pos_var = self.to_coarselogvar(xr).exp()
+            coarse_pos_var = self.to_coarselogvar(xr).exp() if not self.params.discrete else None
 
         return fine_pos_mean, fine_pos_var, coarse_pos_mean, coarse_pos_var
 
@@ -561,35 +574,64 @@ class SepVAE(nn.Module):
         fine_pos_mean, fine_pos_var, coarse_pos_mean, coarse_pos_var = self.encoder(x)
 
         # sample
+        if not self.params.discrete:
 
-        fine_sample = torch.randn_like(fine_pos_mean).to(self.device) * fine_pos_var.sqrt() + fine_pos_mean
-        coarse_sample = torch.randn_like(coarse_pos_mean).to(self.device) * coarse_pos_var.sqrt() + coarse_pos_mean
+            fine_sample = torch.randn_like(fine_pos_mean).to(self.device) * fine_pos_var.sqrt() + fine_pos_mean
+            coarse_sample = torch.randn_like(coarse_pos_mean).to(self.device) * coarse_pos_var.sqrt() + coarse_pos_mean
+
+        else:
+            fine_dis = OneHotDist(logits = fine_pos_mean)
+            coarse_dis = OneHotDist(logits = coarse_pos_mean)
+
+            fine_sample = fine_dis.sample()
+            coarse_sample = coarse_dis.sample()
 
         output = self.decoder(fine_sample, coarse_sample)
 
-        return fine_pos_mean, fine_pos_var, coarse_pos_mean, coarse_pos_var, fine_sample, coarse_sample, output
-
+        if not self.params.discrete:
+            return fine_pos_mean, fine_pos_var, coarse_pos_mean, coarse_pos_var, fine_sample, coarse_sample, output
+        else:
+            return fine_pos_mean, fine_dis, coarse_pos_mean, coarse_dis, fine_sample, coarse_sample, output
 
 
     def elbo(self, fine_pos_mean, fine_pos_var, coarse_pos_mean, coarse_pos_var, output, x):
-
         def gaussian_log(x, mu, var):
             sig = torch.sqrt(var)
-            return - torch.log(sig) - 0.5*np.log(2*np.pi) -  0.5*((x - mu)/sig)**2
+            return - torch.log(sig) - 0.5 * np.log(2 * np.pi) - 0.5 * ((x - mu) / sig) ** 2
 
-        def kl_divergence(mu1, var1):
-            # kl divergence of standard normal
-            mu2 = 0.
-            var2 = 1.
-
-            return 0.5*torch.log(var2/var1) + (var1 + (mu1-mu2)**2)/var2*0.5 - 0.5
-
-        kl_fine = kl_divergence(fine_pos_mean,fine_pos_var).mean(dim=0)
-        kl_coarse = kl_divergence(coarse_pos_mean, coarse_pos_var).mean(dim=0)
-        loglike = gaussian_log(x,output,torch.ones_like(output)*self.params.output_var).mean(dim=0)
+        if not self.params.discrete:
 
 
-        return  kl_fine.sum() + kl_coarse.sum()  - loglike.sum()
+            def kl_divergence(mu1, var1):
+                # kl divergence of standard normal
+                mu2 = 0.
+                var2 = 1.
+
+                return 0.5*torch.log(var2/var1) + (var1 + (mu1-mu2)**2)/var2*0.5 - 0.5
+
+            kl_fine = kl_divergence(fine_pos_mean,fine_pos_var).mean(dim=0)
+            kl_coarse = kl_divergence(coarse_pos_mean, coarse_pos_var).mean(dim=0)
+            loglike = gaussian_log(x,output,torch.ones_like(output)*self.params.output_var).mean(dim=0)
+
+            return kl_fine.sum() , kl_coarse.sum() , -loglike.sum()*self.params.beta
+        else:
+            fine_dis = fine_pos_var
+            coarse_dis = coarse_pos_var
+            prior = OneHotDist(logits = torch.ones_like(fine_pos_mean))
+            loglike = gaussian_log(x, output, torch.ones_like(output)*self.params.output_var).mean(dim = 0)
+            kl_div_fine = torchd.kl.kl_divergence(fine_dis, prior).mean(dim=0)
+            kl_div_coarse = torchd.kl.kl_divergence(coarse_dis, prior).mean(dim=0)
+
+            return kl_div_fine.sum(),kl_div_coarse.sum(),-loglike.sum()*self.params.beta
+
+
+
+
+
+
+
+
+
 
 
 
