@@ -4,6 +4,7 @@ import math
 import numpy as np
 from .utils import OneHotDist
 import torch.distributions as torchd
+from einops import rearrange
 
 class Block(nn.Module):
     def __init__(self, dim, dim_out, kernel_size=3, groups=4):
@@ -577,7 +578,7 @@ class SepVAE(nn.Module):
         self.params = params
         self.device = device
 
-    def forward(self, x):
+    def forward(self, x, num_sample = 1):
 
         fine_pos_mean, fine_pos_var, coarse_pos_mean, coarse_pos_var = self.encoder(x)
 
@@ -591,13 +592,20 @@ class SepVAE(nn.Module):
             fine_dis = OneHotDist(logits = fine_pos_mean)
             coarse_dis = OneHotDist(logits = coarse_pos_mean)
 
-            fine_sample = fine_dis.sample()
-            coarse_sample = coarse_dis.sample()
+            fine_sample = fine_dis.sample(sample_shape=(num_sample,))
+            coarse_sample = coarse_dis.sample(sample_shape=(num_sample,))
+
+            fine_sample = rearrange(fine_sample,'sample batch  h w -> (sample batch)  h w')
+            coarse_sample = rearrange(coarse_sample, 'sample batch  h w -> (sample batch)  h w')
+
             if not self.params.useconv:
                 fine_sample = torch.flatten(fine_sample, 1)
                 coarse_sample = torch.flatten(coarse_sample, 1)
 
-        output = self.decoder(fine_sample, coarse_sample)
+        output = self.decoder(fine_sample, coarse_sample) # output batch*sample c h w
+        if num_sample != 1:
+            output = output.view(num_sample,-1,self.params.input_channel,*output.shape[-2:])
+
 
         if not self.params.discrete:
             return fine_pos_mean, fine_pos_var, coarse_pos_mean, coarse_pos_var, fine_sample, coarse_sample, output
@@ -629,7 +637,11 @@ class SepVAE(nn.Module):
             fine_dis = fine_pos_var
             coarse_dis = coarse_pos_var
             prior = OneHotDist(logits = torch.ones_like(fine_pos_mean))
-            loglike = gaussian_log(x, output, torch.ones_like(output)*self.params.output_var).mean(dim = 0)
+            if len(x.shape) != len(output.shape):
+                x = x.unsqueeze(0)
+                loglike = gaussian_log(x, output, torch.ones_like(output) * self.params.output_var).mean(dim=(0,1))
+            else:
+                loglike = gaussian_log(x, output, torch.ones_like(output)*self.params.output_var).mean(dim = 0)
             kl_div_fine = torchd.kl.kl_divergence(fine_dis, prior).mean(dim=0)
             kl_div_coarse = torchd.kl.kl_divergence(coarse_dis, prior).mean(dim=0)
 

@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 
 class Trainer:
-    def __init__(self, model, optimizer, scheduler, train_loader, test_loader, training_step, report_step, save_path, save_name = 'sepvae.pth', device = torch.device('cpu'),logger=None, report_train = 10):
+    def __init__(self, model, optimizer, scheduler, train_loader, test_loader, training_step, report_step, save_path, num_sample = 1,save_name = 'sepvae.pth', device = torch.device('cpu'),logger=None, report_train = 10):
         self.model = model
         self.optimizer = optimizer
         self.scheduler = scheduler
@@ -20,6 +20,7 @@ class Trainer:
         self.device = device
         self.report_train = report_train
         self.save_name = save_name
+        self.num_sample = num_sample
 
         self.loss_list = []
         self.evaloss_list = []
@@ -83,7 +84,7 @@ class Trainer:
                 X = X.to(self.device)
                 self.model.train()
                 self.optimizer.zero_grad()
-                fine_pos_mean, fine_pos_var, coarse_pos_mean, coarse_pos_var, fine_sample, coarse_sample, output = self.model(X)
+                fine_pos_mean, fine_pos_var, coarse_pos_mean, coarse_pos_var, fine_sample, coarse_sample, output = self.model(X,self.num_sample)
                 klfine,klcoarse,negalikeli = self.model.elbo(fine_pos_mean, fine_pos_var, coarse_pos_mean, coarse_pos_var, output, X)
                 loss = klfine + klcoarse + negalikeli
                 self.loss_list.append(loss.item())
@@ -130,6 +131,8 @@ class Trainer:
 
 
 class OneHotDist(torchd.one_hot_categorical.OneHotCategorical):
+
+    has_rsample = True
 
     def __init__(self, logits=None, probs=None):
         super().__init__(logits=logits, probs=probs)
