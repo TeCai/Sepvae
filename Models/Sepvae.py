@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import math
 import numpy as np
-from .utils import OneHotDist
+from .utils import OneHotDist,STBernoulli
 import torch.distributions as torchd
 from einops import rearrange
 
@@ -309,6 +309,7 @@ class Params():
                  output_var = 1e-4,
                  discrete = False,
                  beta = 1e-3,
+                 ber = False
                  ):
 
 
@@ -345,6 +346,7 @@ class Params():
         self.output_var = output_var
         self.discrete = discrete
         self.beta = beta
+        self.ber = False
 
         if self.discrete and self.useconv:
             self.expanding = (1,2,4)
@@ -591,11 +593,12 @@ class SepVAE(nn.Module):
         else:
             if self.params.useconv:
 
-                fine_pos_mean = rearrange(fine_pos_mean, 'batch c h w -> batch h w c')
-                coarse_pos_mean = rearrange(coarse_pos_mean, 'batch c h w -> batch h w c')
+                # fine_pos_mean = rearrange(fine_pos_mean, 'batch c h w -> batch h w c')
+                # coarse_pos_mean = rearrange(coarse_pos_mean, 'batch c h w -> batch h w c')
+                pass
 
-            fine_dis = OneHotDist(logits = fine_pos_mean)
-            coarse_dis = OneHotDist(logits = coarse_pos_mean)
+            fine_dis = OneHotDist(logits = fine_pos_mean) if not self.params.ber else STBernoulli(logits = fine_pos_mean)
+            coarse_dis = OneHotDist(logits = coarse_pos_mean) if not self.params.ber else STBernoulli(logits = coarse_pos_mean)
 
 
 
@@ -610,8 +613,8 @@ class SepVAE(nn.Module):
                 fine_sample = torch.flatten(fine_sample, 1)
                 coarse_sample = torch.flatten(coarse_sample, 1)
             else:
-                fine_sample = rearrange(fine_sample, 'sample batch  h w c -> (sample batch) c h w ')
-                coarse_sample = rearrange(coarse_sample, 'sample batch h w c -> (sample batch) c h w ')
+                fine_sample = rearrange(fine_sample, 'sample batch c h w  -> (sample batch) c h w ')
+                coarse_sample = rearrange(coarse_sample, 'sample batch c h w  -> (sample batch) c h w ')
 
         output = self.decoder(fine_sample, coarse_sample) # output batch*sample c h w
         if num_sample != 1:
@@ -647,7 +650,7 @@ class SepVAE(nn.Module):
         else:
             fine_dis = fine_pos_var
             coarse_dis = coarse_pos_var
-            prior = OneHotDist(logits = torch.ones_like(fine_pos_mean))
+            prior = OneHotDist(logits = torch.ones_like(fine_pos_mean))  if not self.params.ber else STBernoulli(probs = torch.ones_like(fine_pos_mean)*0.5)
             if len(x.shape) != len(output.shape):
                 x = x.unsqueeze(0)
                 loglike = gaussian_log(x, output, torch.ones_like(output) * self.params.output_var).mean(dim=(0,1))

@@ -139,7 +139,7 @@ class OneHotDist(torchd.one_hot_categorical.OneHotCategorical):
 
     def mode(self):
         _mode = F.one_hot(torch.argmax(super().logits, dim=-1), super().logits.shape[-1])
-        return _mode.detach() + super().logits - super().logits.detach()
+        return _mode.detach() + super().probs - super().probs.detach()
 
     def sample(self, sample_shape=(), seed=None):
         if seed is not None:
@@ -151,3 +151,25 @@ class OneHotDist(torchd.one_hot_categorical.OneHotCategorical):
         sample += probs - probs.detach()
         return sample
 
+
+class STBernoulli(torchd.bernoulli.Bernoulli):
+
+    has_rsample = True
+
+    def __init__(self, logits=None, probs=None):
+        super().__init__(logits=logits, probs=probs)
+
+    def mode(self):
+        # _mode = F.one_hot(torch.argmax(super().logits, dim=-1), super().logits.shape[-1])
+        _mode = torch.where(super().probs > 0.5, torch.ones_like(super().probs), torch.zeros_like(super().probs))
+        return _mode.detach() + super().probs - super().probs.detach()
+
+    def sample(self, sample_shape=(), seed=None):
+        if seed is not None:
+            raise ValueError('need to check')
+        sample = super().sample(sample_shape)
+        probs = super().probs
+        while len(probs.shape) < len(sample.shape):
+            probs = probs[None]
+        sample += probs - probs.detach()
+        return sample
