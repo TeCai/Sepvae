@@ -589,18 +589,29 @@ class SepVAE(nn.Module):
             coarse_sample = torch.randn_like(coarse_pos_mean).to(self.device) * coarse_pos_var.sqrt() + coarse_pos_mean
 
         else:
+            if self.params.useconv:
+
+                fine_pos_mean = rearrange(fine_pos_mean, 'batch c h w -> batch h w c')
+                coarse_pos_mean = rearrange(coarse_pos_mean, 'batch c h w -> batch h w c')
+
             fine_dis = OneHotDist(logits = fine_pos_mean)
             coarse_dis = OneHotDist(logits = coarse_pos_mean)
+
+
 
             fine_sample = fine_dis.sample(sample_shape=(num_sample,))
             coarse_sample = coarse_dis.sample(sample_shape=(num_sample,))
 
-            fine_sample = rearrange(fine_sample,'sample batch  h w -> (sample batch)  h w')
-            coarse_sample = rearrange(coarse_sample, 'sample batch  h w -> (sample batch)  h w')
+
 
             if not self.params.useconv:
+                fine_sample = rearrange(fine_sample, 'sample batch  h w -> (sample batch)  h w')
+                coarse_sample = rearrange(coarse_sample, 'sample batch  h w -> (sample batch)  h w')
                 fine_sample = torch.flatten(fine_sample, 1)
                 coarse_sample = torch.flatten(coarse_sample, 1)
+            else:
+                fine_sample = rearrange(fine_sample, 'sample batch  h w c -> (sample batch) c h w ')
+                coarse_sample = rearrange(coarse_sample, 'sample batch h w c -> (sample batch) c h w ')
 
         output = self.decoder(fine_sample, coarse_sample) # output batch*sample c h w
         if num_sample != 1:
